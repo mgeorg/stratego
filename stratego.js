@@ -26,10 +26,11 @@ function load() {
 
   canvas.addEventListener("click", click);
   window.addEventListener("keydown", keydown);
+  window.addEventListener("keyup", keyup);
   window.addEventListener("resize", resize);
 
   if (!loadState('default')) {
-    setupBoard();
+    resetGame();
   }
   resize();
 }
@@ -49,6 +50,10 @@ function keydown(e) {
   gameRecord.keydown(e);
 }
 
+function keyup(e) {
+  gameRecord.keyup(e);
+}
+
 function drawOnCanvas() {
   ctx.resetTransform();
   ctx.fillStyle = "black";
@@ -58,10 +63,10 @@ function drawOnCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   DrawGrid();
-  gameRecord.cur().draw();
+  gameRecord.cur().draw(gameRecord.showOrigin);
 }
 
-function setupBoard() {
+function resetGame() {
   gameRecord = new Record();
   for (let x = 0; x < 10; ++x) {
     for (let y = 0; y < 4; ++y) {
@@ -120,24 +125,33 @@ class Piece {
     this.discovered = false;
   }
 
-  draw(highlighted) {
+  draw(showOrigin, highlighted) {
     let saveStyle = ctx.fillStyle;
+    let x;
+    let y;
+    if (showOrigin) {
+      x = this.path[0].x;
+      y = this.path[0].y;
+    } else {
+      x = this.cur.x;
+      y = this.cur.y;
+    }
 
     let piece_start_x = 
-        _MARGIN + _PIECE_X_MARGIN + gridWidth / 10 * this.cur.x;
+        _MARGIN + _PIECE_X_MARGIN + gridWidth / 10 * x;
     let piece_width = gridWidth / 10 - 2 * _PIECE_X_MARGIN - _STATUS_WIDTH;
     let piece_start_y = 
-        _MARGIN + _PIECE_Y_MARGIN + gridHeight / 10 * this.cur.y;
+        _MARGIN + _PIECE_Y_MARGIN + gridHeight / 10 * y;
     let piece_height = gridHeight / 10 - 2 * _PIECE_Y_MARGIN;
 
     if (highlighted) {
       ctx.fillStyle = "#FFFF00";
-      ctx.fillRect(_MARGIN + gridWidth / 10 * this.cur.x,
-                   _MARGIN + gridHeight / 10 * this.cur.y,
+      ctx.fillRect(_MARGIN + gridWidth / 10 * x,
+                   _MARGIN + gridHeight / 10 * y,
                    gridWidth / 10,
                    gridHeight / 10);
     }
-    if (this.mine) {
+    if (this.mine == gameRecord.iAmRed) {
       ctx.fillStyle = "#DD8888";
     } else {
       ctx.fillStyle = "#88DDDD";
@@ -156,7 +170,9 @@ class Piece {
           piece_start_y + piece_height / 2 + text_height/2);
     }
 
-    if (this.moved) {
+    if (this.dead) {
+      ctx.fillStyle = "black";
+    } else if (this.moved) {
       ctx.fillStyle = "green";
     } else {
       ctx.fillStyle = "red";
@@ -165,7 +181,9 @@ class Piece {
                  piece_start_y,
                  _STATUS_WIDTH, Math.floor(piece_height/2));
 
-    if (this.discovered) {
+    if (this.dead) {
+      ctx.fillStyle = "black";
+    } else if (this.discovered) {
       ctx.fillStyle = "green";
     } else {
       ctx.fillStyle = "red";
@@ -373,23 +391,31 @@ class Board {
          [null, null, null, null, null, null, null, null, null, null],
          [null, null, null, null, null, null, null, null, null, null],
          [null, null, null, null, null, null, null, null, null, null]];
+    this.graveyard = [];
     this.highlight = null;
     this.pendingAttack = null;
     this.typing = null;
+    this.showOrigin = false;
   }
 
-  draw() {
+  draw(showOrigin) {
     for (let x = 0; x < 10; ++x) {
       for (let y = 0; y < 10; ++y) {
         let p = this.pieces[x][y];
         if (p) {
-          p.draw((this.highlight &&
+          p.draw(showOrigin,
+                 (this.highlight &&
                   this.highlight.x == x &&
                   this.highlight.y == y) ||
                  (this.pendingAttack &&
                   this.pendingAttack.x == x &&
                   this.pendingAttack.y == y));
         }
+      }
+    }
+    if (showOrigin) {
+      for (let i = 0; i < this.graveyard.length; ++i) {
+        this.graveyard[i].draw(true, false);
       }
     }
   }
@@ -403,6 +429,36 @@ class Board {
     return true;
   }
 
+  capture(from, to) {
+    let from_loc = Location.revive(from.cur);
+    let to_loc = Location.revive(to.cur);
+
+    let win = canCapture(from, to);
+    if (win > 0) {
+      this.pieces[to_loc.x][to_loc.y] = from;
+      this.pieces[from_loc.x][from_loc.y] = null;
+      from.move(to_loc.x, to_loc.y);
+      from.discovered = true;
+      to.dead = true;
+      this.graveyard.push(to);
+    } else if(win == 0) {
+      to.dead = true;
+      from.dead = true;
+      this.graveyard.push(to);
+      this.graveyard.push(from);
+      this.pieces[from_loc.x][from_loc.y] = null;
+      this.pieces[to_loc.x][to_loc.y] = null;
+    } else {
+      this.pieces[from_loc.x][from_loc.y] = null;
+      from.dead = true;
+      this.graveyard.push(from);
+      to.discovered = true;
+    }
+    this.highlight = null;
+    this.pendingAttack = null;
+    this.typing = null;
+  }
+
   makePendingAttack() {
     let from = this.pieces[this.highlight.x][this.highlight.y];
     let to = this.pieces[this.pendingAttack.x][this.pendingAttack.y];
@@ -413,27 +469,7 @@ class Board {
       drawOnCanvas();
       return;
     }
-    let win = canCapture(from, to);
-    if (win > 0) {
-      this.pieces[this.pendingAttack.x][this.pendingAttack.y] = from;
-      this.pieces[this.highlight.x][this.highlight.y] = null;
-      from.move(this.pendingAttack.x, this.pendingAttack.y);
-      this.highlight = null;
-      this.pendingAttack = null;
-      from.discovered = true;
-    } else if(win == 0) {
-      this.pieces[this.highlight.x][this.highlight.y] = null;
-      this.pieces[this.pendingAttack.x][this.pendingAttack.y] = null;
-      this.highlight = null;
-      this.pendingAttack = null;
-      this.typing = null;
-    } else {
-      this.pieces[this.highlight.x][this.highlight.y] = null;
-      this.highlight = null;
-      this.pendingAttack = null;
-      this.typing = null;
-      to.discovered = true;
-    }
+    this.capture(from, to);
     drawOnCanvas();
   }
 
@@ -451,6 +487,11 @@ class Board {
         b.pieces[x][y] = Piece.revive(saveObject.pieces[x][y]);
       }
     }
+    if (saveObject.graveyard) {
+      for (let i = 0; i < saveObject.graveyard.length; ++i) {
+        b.graveyard.push(Piece.revive(saveObject.graveyard[i]));
+      }
+    }
     b.frozen = saveObject.frozen;
     b.highlight = Location.revive(saveObject.highlight);
     b.pendingAttack = Location.revive(saveObject.pendingAttack);
@@ -463,6 +504,7 @@ class Record {
   constructor() {
     this.history = [new Board()];
     this.viewing = 0;
+    this.iAmRed = true;
   }
 
   cur() {
@@ -477,6 +519,7 @@ class Record {
     this.history.push(copy);
     this.history.push(cur);
     this.viewing = this.history.length-1;
+    this.showOrigin = false;
   }
 
   click(x, y) {
@@ -530,27 +573,7 @@ class Record {
         }
         // Capture.
         this.advanceHistory();
-        let win = canCapture(from, p);
-        if (win > 0) {
-          board.pieces[x][y] = from;
-          board.pieces[board.highlight.x][board.highlight.y] = null;
-          board.highlight = null;
-          board.pendingAttack = null;
-          from.move(x, y);
-          from.discovered = true;
-        } else if(win == 0) {
-          board.pieces[board.highlight.x][board.highlight.y] = null;
-          board.pieces[x][y] = null;
-          board.highlight = null;
-          board.pendingAttack = null;
-          board.typing = null;
-        } else {
-          board.pieces[board.highlight.x][board.highlight.y] = null;
-          board.highlight = null;
-          board.pendingAttack = null;
-          board.typing = null;
-          p.discovered = true;
-        }
+        board.capture(from, p);
       } else {
         // Move.
         if (canMove(from.cur.x, from.cur.y, x, y, from.rank() == 2)) {
@@ -583,8 +606,21 @@ class Record {
     drawOnCanvas();
   }
 
+  keyup(e) {
+    if (e.keyCode == 17) {
+      this.showOrigin = false;
+      drawOnCanvas();
+      return;
+    }
+  }
+
   keydown(e) {
-    // console.log(e);
+    console.log(e);
+    if (e.keyCode == 17) {  // LeftCtrl
+      this.showOrigin = true;
+      drawOnCanvas();
+      return;
+    }
     if (e.keyCode == 37) {  // LeftArrow
       this.viewing -= 1;
       if (this.viewing < 0) {
@@ -669,6 +705,7 @@ class Record {
       r.history.push(Board.revive(saveObject.history[i]));
     }
     r.viewing = r.history.length-1;
+    r.iAmRed = saveObject.iAmRed;
     return r;
   }
 }
@@ -686,6 +723,11 @@ function loadState(name) {
   gameRecord = Record.revive(saveObject);
   drawOnCanvas();
   return true;
+}
+
+function setColor(iAmRed) {
+  gameRecord.iAmRed = iAmRed;
+  drawOnCanvas();
 }
 
 window.addEventListener('load', load);
